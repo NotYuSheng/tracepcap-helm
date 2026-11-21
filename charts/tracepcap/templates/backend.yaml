@@ -1,0 +1,230 @@
+{{- $b := .Values.backend }}
+{{- $fullname := include "tracepcap.backend.fullname" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "tracepcap.componentLabels" (dict "ctx" . "component" "backend") | nindent 4 }}
+spec:
+  # Single replica by design (in-process job queue and executors). Recreate so an upgrade never
+  # runs two backends against the same database and job state.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "tracepcap.componentSelectorLabels" (dict "ctx" . "component" "backend") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tracepcap.componentSelectorLabels" (dict "ctx" . "component" "backend") | nindent 8 }}
+        {{- with $b.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/secrets: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
+        {{- with $b.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- include "tracepcap.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "tracepcap.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ $b.terminationGracePeriodSeconds }}
+      {{- with $b.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with $b.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Compose's depends_on/service_healthy: hold the backend until PostgreSQL and object storage
+      # accept connections, so a fresh install doesn't crash-loop through Flyway.
+      initContainers:
+        - name: wait-for-datastores
+          image: {{ include "tracepcap.image" (dict "ctx" . "image" .Values.utilityImage) | quote }}
+          imagePullPolicy: {{ .Values.utilityImage.pullPolicy }}
+          {{- $s3 := urlParse (include "tracepcap.s3.endpoint" .) }}
+          {{- $s3host := $s3.host }}
+          {{- if not (contains ":" $s3host) }}
+          {{- $s3host = printf "%s:%s" $s3host (ternary "443" "80" (eq $s3.scheme "https")) }}
+          {{- end }}
+          command:
+            - sh
+            - -c
+            - |
+              for target in {{ include "tracepcap.database.host" . }}:{{ include "tracepcap.database.port" . }} {{ $s3host }}; do
+                until nc -z -w 2 "${target%:*}" "${target##*:}"; do
+                  echo "waiting for $target"; sleep 2
+                done
+                echo "$target is up"
+              done
+          securityContext:
+            runAsUser: 65534
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 32Mi}
+      containers:
+        - name: backend
+          image: {{ include "tracepcap.image" (dict "ctx" . "image" $b.image) | quote }}
+          imagePullPolicy: {{ $b.image.pullPolicy }}
+          {{- with $b.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: TZ
+              value: {{ .Values.timezone | quote }}
+            - name: SPRING_PROFILES_ACTIVE
+              value: {{ $b.springProfile | quote }}
+            - name: CORS_ALLOWED_ORIGINS
+              value: {{ $b.corsAllowedOrigins | quote }}
+            - name: APP_MEMORY_MB
+              value: {{ $b.memoryMB | quote }}
+            - name: JVM_HEAP_PERCENT
+              value: {{ $b.jvmHeapPercent | quote }}
+            - name: TRACEPCAP_AUTH_ENABLED
+              value: "false"
+            - name: SYSTEM_SETTINGS_EDITABLE
+              value: {{ $b.systemSettingsEditable | quote }}
+            # Database
+            - name: DATABASE_URL
+              value: {{ printf "jdbc:postgresql://%s:%s/%s" (include "tracepcap.database.host" .) (include "tracepcap.database.port" .) (include "tracepcap.database.name" .) | quote }}
+            {{- if .Values.postgresql.enabled }}
+            - name: DATABASE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tracepcap.database.secretName" . }}
+                  key: username
+            {{- else }}
+            - name: DATABASE_USERNAME
+              value: {{ .Values.externalDatabase.username | quote }}
+            {{- end }}
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tracepcap.database.secretName" . }}
+                  key: {{ include "tracepcap.database.passwordKey" . }}
+            # Object storage
+            - name: MINIO_ENDPOINT
+              value: {{ include "tracepcap.s3.endpoint" . | quote }}
+            - name: MINIO_BUCKET
+              value: {{ include "tracepcap.s3.bucket" . | quote }}
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tracepcap.s3.secretName" . }}
+                  key: {{ include "tracepcap.s3.accessKeyKey" . }}
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tracepcap.s3.secretName" . }}
+                  key: {{ include "tracepcap.s3.secretKeyKey" . }}
+            # LLM
+            - name: LLM_API_BASE_URL
+              value: {{ $b.llm.baseUrl | quote }}
+            - name: LLM_MODEL
+              value: {{ $b.llm.model | quote }}
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tracepcap.llm.secretName" . }}
+                  key: {{ $b.llm.existingSecretKey }}
+            - name: LLM_TEMPERATURE
+              value: {{ $b.llm.temperature | quote }}
+            - name: LLM_MAX_TOKENS
+              value: {{ $b.llm.maxTokens | quote }}
+            - name: LLM_CONTEXT_LENGTH
+              value: {{ $b.llm.contextLength | quote }}
+            - name: LLM_TIMEOUT
+              value: {{ $b.llm.timeout | quote }}
+            - name: LLM_TOOL_CALLING
+              value: {{ $b.llm.toolCalling | quote }}
+            # Analysis
+            - name: GEO_FORCE_OFFLINE
+              value: {{ $b.geoForceOffline | quote }}
+            - name: FILE_RETENTION_ENABLED
+              value: {{ $b.retention.enabled | quote }}
+            - name: FILE_RETENTION_HOURS
+              value: {{ $b.retention.fileHours | quote }}
+            - name: MONITOR_FILE_RETENTION_HOURS
+              value: {{ $b.retention.monitorFileHours | quote }}
+            - name: PACKET_RETENTION_HOURS
+              value: {{ $b.retention.packetHours | quote }}
+            - name: SURICATA_ENABLED
+              value: {{ $b.suricata.enabled | quote }}
+            - name: SURICATA_WARM_ENGINE_ENABLED
+              value: {{ $b.suricata.warmEngine | quote }}
+            - name: MAX_UPLOAD_PACKETS
+              value: {{ $b.maxUploadPackets | int64 | quote }}
+            {{- range $k, $v := $b.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- with $b.extraEnvRaw }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with $b.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $b.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $b.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml $b.resources | nindent 12 }}
+          volumeMounts:
+            - name: logs
+              mountPath: /app/logs
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # Logs go to stdout too; the file log (prod profile) is scratch. Suricata's warm-engine
+        # socket and the analysis temp files live in /tmp.
+        - name: logs
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+      {{- with $b.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $b.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $b.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "tracepcap.componentLabels" (dict "ctx" . "component" "backend") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ $b.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "tracepcap.componentSelectorLabels" (dict "ctx" . "component" "backend") | nindent 4 }}

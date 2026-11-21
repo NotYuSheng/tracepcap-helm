@@ -1,0 +1,28 @@
+TracePcap {{ .Chart.AppVersion }} is deploying as release "{{ .Release.Name }}" in "{{ .Release.Namespace }}".
+
+The backend takes a minute or two to start (Flyway migrations, Suricata ruleset load):
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "tracepcap.backend.fullname" . }}
+
+Open the app:
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}/
+{{- end }}
+{{- else if eq .Values.frontend.service.type "NodePort" }}
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "tracepcap.frontend.fullname" . }} -o jsonpath='{.spec.ports[0].nodePort}'
+{{- else if eq .Values.frontend.service.type "LoadBalancer" }}
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "tracepcap.frontend.fullname" . }} -w
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "tracepcap.frontend.fullname" . }} 8080:{{ .Values.frontend.service.port }}
+  then browse to http://localhost:8080
+{{- end }}
+{{- if not .Values.backend.llm.baseUrl }}
+
+NOTE: backend.llm.baseUrl is not set, so Story mode, insights and chat will fail until you point
+it at an OpenAI-compatible inference server (helm upgrade --reuse-values --set backend.llm.baseUrl=...).
+{{- end }}
+{{- if or .Values.postgresql.enabled .Values.minio.enabled }}
+
+The bundled {{ if .Values.postgresql.enabled }}PostgreSQL{{ end }}{{ if and .Values.postgresql.enabled .Values.minio.enabled }} and {{ end }}{{ if .Values.minio.enabled }}MinIO{{ end }} are single instances. Generated passwords are in Secrets
+that survive uninstall (helm.sh/resource-policy: keep), as do the data PVCs.
+{{- end }}

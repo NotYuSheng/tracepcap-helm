@@ -1,0 +1,125 @@
+{{- if .Values.minio.enabled }}
+{{- $m := .Values.minio }}
+{{- $fullname := include "tracepcap.minio.fullname" . }}
+{{- $secret := $m.auth.existingSecret | default $fullname }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "tracepcap.componentLabels" (dict "ctx" . "component" "minio") | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ $fullname }}
+  selector:
+    matchLabels:
+      {{- include "tracepcap.componentSelectorLabels" (dict "ctx" . "component" "minio") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tracepcap.componentSelectorLabels" (dict "ctx" . "component" "minio") | nindent 8 }}
+    spec:
+      {{- include "tracepcap.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "tracepcap.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      # Chainguard's MinIO runs as 65532; fsGroup hands it the volume (the Compose stack needs a
+      # one-shot chown container for the same thing).
+      securityContext:
+        runAsUser: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: minio
+          image: {{ include "tracepcap.image" (dict "ctx" . "image" $m.image) | quote }}
+          imagePullPolicy: {{ $m.image.pullPolicy }}
+          args: [server, /data, --console-address, ":9001"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: api
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+          env:
+            - name: TZ
+              value: {{ .Values.timezone | quote }}
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef: {name: {{ $secret }}, key: root-user}
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ $secret }}, key: root-password}
+          livenessProbe:
+            httpGet: {path: /minio/health/live, port: api}
+            periodSeconds: 30
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet: {path: /minio/health/ready, port: api}
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml $m.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if not $m.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+      {{- with $m.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $m.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $m.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if $m.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "tracepcap.componentSelectorLabels" (dict "ctx" . "component" "minio") | nindent 10 }}
+      spec:
+        accessModes:
+          {{- toYaml $m.persistence.accessModes | nindent 10 }}
+        {{- include "tracepcap.storageClass" (dict "ctx" . "persistence" $m.persistence) | nindent 8 }}
+        resources:
+          requests:
+            storage: {{ $m.persistence.size }}
+  {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "tracepcap.componentLabels" (dict "ctx" . "component" "minio") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: api
+      port: 9000
+      targetPort: api
+    - name: console
+      port: 9001
+      targetPort: console
+  selector:
+    {{- include "tracepcap.componentSelectorLabels" (dict "ctx" . "component" "minio") | nindent 4 }}
+{{- end }}

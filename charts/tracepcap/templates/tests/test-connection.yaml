@@ -1,0 +1,26 @@
+# `helm test <release>`: the UI loads and /api reaches the backend through nginx.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "tracepcap.fullname" . }}-test
+  labels:
+    {{- include "tracepcap.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  containers:
+    - name: smoke
+      image: {{ include "tracepcap.image" (dict "ctx" . "image" .Values.utilityImage) | quote }}
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          base=http://{{ include "tracepcap.frontend.fullname" . }}:{{ .Values.frontend.service.port }}
+          wget -qO- "$base/health"
+          wget -qO- "$base/" | grep -q '<div id="root"'
+          wget -qO- "$base/api/v1/system/limits" | grep -q '{'
+          echo "frontend and API reachable"

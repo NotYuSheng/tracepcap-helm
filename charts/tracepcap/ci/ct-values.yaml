@@ -1,0 +1,16 @@
+# Values `ct install` uses in CI (a kind cluster on a GitHub runner).
+# Until a TracePcap release publishes version-tagged images, CI tracks `latest`.
+backend:
+  image: {tag: latest, pullPolicy: Always}
+  memoryMB: 2048
+  resources:
+    requests: {cpu: 250m, memory: 2Gi}
+    limits: {cpu: "2", memory: 2Gi}
+frontend:
+  image: {tag: latest, pullPolicy: Always}
+postgresql:
+  persistence: {size: 1Gi}
+minio:
+  persistence: {size: 1Gi}
+networkPolicy:
+  enabled: true

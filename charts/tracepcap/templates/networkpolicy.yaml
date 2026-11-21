@@ -1,0 +1,59 @@
+{{- if .Values.networkPolicy.enabled }}
+# Frontend: reachable from anywhere (the Ingress controller lives in another namespace).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tracepcap.frontend.fullname" . }}
+  labels:
+    {{- include "tracepcap.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tracepcap.componentSelectorLabels" (dict "ctx" . "component" "frontend") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - port: http
+---
+# Backend: only from the frontend.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tracepcap.backend.fullname" . }}
+  labels:
+    {{- include "tracepcap.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tracepcap.componentSelectorLabels" (dict "ctx" . "component" "backend") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "tracepcap.componentSelectorLabels" (dict "ctx" . "component" "frontend") | nindent 14 }}
+      ports:
+        - port: http
+{{- range $c := list "postgresql" "minio" }}
+{{- if (index $.Values $c).enabled }}
+---
+# {{ $c }}: only from the backend.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ printf "%s-%s" (include "tracepcap.fullname" $) $c }}
+  labels:
+    {{- include "tracepcap.labels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tracepcap.componentSelectorLabels" (dict "ctx" $ "component" $c) | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "tracepcap.componentSelectorLabels" (dict "ctx" $ "component" "backend") | nindent 14 }}
+{{- end }}
+{{- end }}
+{{- end }}

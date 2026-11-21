@@ -1,0 +1,106 @@
+{{- $f := .Values.frontend }}
+{{- $fullname := include "tracepcap.frontend.fullname" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "tracepcap.componentLabels" (dict "ctx" . "component" "frontend") | nindent 4 }}
+spec:
+  replicas: {{ $f.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "tracepcap.componentSelectorLabels" (dict "ctx" . "component" "frontend") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tracepcap.componentSelectorLabels" (dict "ctx" . "component" "frontend") | nindent 8 }}
+        {{- with $f.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with $f.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- include "tracepcap.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "tracepcap.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with $f.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: nginx
+          image: {{ include "tracepcap.image" (dict "ctx" . "image" $f.image) | quote }}
+          imagePullPolicy: {{ $f.image.pullPolicy }}
+          {{- with $f.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          env:
+            - name: TZ
+              value: {{ .Values.timezone | quote }}
+            # The entrypoint sizes the upload limit and proxy timeout from the BACKEND's budget.
+            - name: APP_MEMORY_MB
+              value: {{ .Values.backend.memoryMB | quote }}
+            - name: BACKEND_MEM_LIMIT
+              value: {{ printf "%dm" (int .Values.backend.memoryMB) | quote }}
+            - name: LLM_TIMEOUT
+              value: {{ .Values.backend.llm.timeout | quote }}
+            # nginx's resolver ignores search domains, so the upstream must be fully qualified.
+            - name: NGINX_BACKEND_URL
+              value: {{ printf "http://%s.%s.svc.%s:%v" (include "tracepcap.backend.fullname" .) .Release.Namespace .Values.clusterDomain .Values.backend.service.port | quote }}
+            {{- range $k, $v := $f.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- with $f.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $f.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml $f.resources | nindent 12 }}
+      {{- with $f.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $f.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $f.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "tracepcap.componentLabels" (dict "ctx" . "component" "frontend") | nindent 4 }}
+  {{- with $f.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $f.service.type }}
+  ports:
+    - name: http
+      port: {{ $f.service.port }}
+      targetPort: http
+      protocol: TCP
+      {{- if and (eq $f.service.type "NodePort") $f.service.nodePort }}
+      nodePort: {{ $f.service.nodePort }}
+      {{- end }}
+  selector:
+    {{- include "tracepcap.componentSelectorLabels" (dict "ctx" . "component" "frontend") | nindent 4 }}

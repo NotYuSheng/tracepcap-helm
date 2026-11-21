@@ -1,0 +1,57 @@
+name: Lint and test charts
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: helm/chart-testing-action@v2.7.0
+
+      - name: List changed charts
+        id: list-changed
+        run: |
+          changed=$(ct list-changed --config ct.yaml)
+          if [ -n "$changed" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+
+      # Lints with every ci/*-values.yaml file, checks the version bump and the schema.
+      - name: Lint
+        run: ct lint --config ct.yaml --all
+
+      - name: Render every documented configuration
+        run: |
+          c=charts/tracepcap
+          helm template t $c >/dev/null
+          helm template t $c --set ingress.enabled=true,networkPolicy.enabled=true >/dev/null
+          helm template t $c \
+            --set postgresql.enabled=false,externalDatabase.host=db,externalDatabase.password=x \
+            --set minio.enabled=false,externalS3.endpoint=https://s3.example,externalS3.accessKey=a,externalS3.secretKey=b \
+            >/dev/null
+
+      - name: Create kind cluster
+        if: steps.list-changed.outputs.changed == 'true'
+        uses: helm/kind-action@v1.12.0
+
+      # Installs into a fresh namespace, waits for every pod to be ready, then runs `helm test`.
+      - name: Install and test
+        if: steps.list-changed.outputs.changed == 'true'
+        run: ct install --config ct.yaml

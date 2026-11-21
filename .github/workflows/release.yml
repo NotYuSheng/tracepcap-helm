@@ -1,0 +1,54 @@
+name: Release charts
+
+# Every merge to main that bumps a chart's `version` publishes it:
+#   - OCI:    oci://ghcr.io/<owner>/charts/<chart>
+#   - GitHub: a <chart>-<version> release with the .tgz attached (for air-gapped transfer)
+on:
+  push:
+    branches: [main]
+    paths: ["charts/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+
+      - name: Package and publish new chart versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "${{ github.token }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          mkdir -p .cr-release-packages
+          for chart in charts/*/; do
+            name=$(yq '.name' "$chart/Chart.yaml")
+            version=$(yq '.version' "$chart/Chart.yaml")
+            tag="$name-$version"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "$tag already released, skipping"; continue
+            fi
+            helm package "$chart" -d .cr-release-packages
+            helm push ".cr-release-packages/$tag.tgz" "oci://ghcr.io/$owner/charts"
+            app=$(yq '.appVersion' "$chart/Chart.yaml")
+            gh release create "$tag" ".cr-release-packages/$tag.tgz" \
+              --title "$tag" \
+              --notes "TracePcap chart $version (app $app).
+
+          \`\`\`
+          helm install tracepcap oci://ghcr.io/$owner/charts/$name --version $version
+          \`\`\`"
+          done

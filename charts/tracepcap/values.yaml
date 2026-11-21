@@ -1,0 +1,318 @@
+# Default values for the TracePcap chart.
+# Every value here is documented in values.schema.json and the chart README.
+
+global:
+  # -- Prefix for every image (air-gapped installs: point this at your internal registry mirror).
+  imageRegistry: ""
+  # -- Pull secrets for every pod, e.g. [{name: regcred}].
+  imagePullSecrets: []
+  # -- StorageClass for every PVC unless a component sets its own ("" = cluster default).
+  storageClass: ""
+
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Timezone passed to every container as TZ.
+timezone: Asia/Singapore
+
+# -- Cluster DNS domain, for the fully qualified backend URL nginx proxies to.
+clusterDomain: cluster.local
+
+# -- Small utility image for the backend's wait-for-datastores init container and `helm test`.
+# Mirror it alongside the app images for air-gapped installs.
+utilityImage:
+  registry: docker.io
+  repository: library/busybox
+  tag: "1.37"
+  digest: ""
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  # TracePcap never calls the Kubernetes API.
+  automountServiceAccountToken: false
+
+## ---------------------------------------------------------------------------------------------
+## Backend: Spring Boot API plus tshark / nDPI / Suricata. Runs as a single replica: background
+## AI jobs and analysis run on in-process executors, so two replicas would split that state.
+## ---------------------------------------------------------------------------------------------
+backend:
+  image:
+    registry: ghcr.io
+    repository: notyusheng/tracepcap-backend
+    # -- Defaults to the chart's appVersion.
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+
+  # -- Memory budget in MB (APP_MEMORY_MB). The container's memory limit is what the entrypoint
+  # actually sizes against (JVM heap = jvmHeapPercent of it, upload cap = 16%, analysis timeout =
+  # 45% in seconds), so keep resources.limits.memory equal to this.
+  memoryMB: 2048
+  # -- Share of the memory limit given to the JVM heap; the rest is for tshark/nDPI/Suricata.
+  jvmHeapPercent: 50
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "4"
+      memory: 2Gi
+
+  # -- Spring profile. `prod` turns on strict CORS, hides stack traces and disables Swagger UI.
+  springProfile: prod
+  # -- Comma-separated origins allowed by CORS under the prod profile. Same-origin (through the
+  # frontend or Ingress) needs nothing here.
+  corsAllowedOrigins: ""
+
+  llm:
+    # -- OpenAI-compatible endpoint of your inference server (LM Studio, Ollama, vLLM, ...).
+    # Story mode, insights and chat fail at request time until this is set.
+    baseUrl: ""
+    model: ""
+    # -- Ignored when existingSecret is set.
+    apiKey: ""
+    # -- Secret holding the API key, so it stays out of values.
+    existingSecret: ""
+    existingSecretKey: llm-api-key
+    temperature: "0.7"
+    maxTokens: "2000"
+    contextLength: ""
+    # -- Seconds. Reasoning models on local hardware often need 900.
+    timeout: "300"
+    toolCalling: auto
+
+  # -- Air-gapped by default: geolocation from the bundled DB-IP MMDB only, no ipinfo.io calls.
+  geoForceOffline: true
+
+  retention:
+    # -- false keeps uploads forever (and none of the hours below apply).
+    enabled: true
+    # -- 0 here means "delete everything now", not "never".
+    fileHours: 12
+    monitorFileHours: 0
+    packetHours: 0
+
+  suricata:
+    enabled: true
+    warmEngine: true
+
+  # -- Max packets per upload (MAX_UPLOAD_PACKETS); 0 disables. Raise together with
+  # postgresql.shmSize and postgresql.config.workMem.
+  maxUploadPackets: 2000000
+
+  # -- Allow admin-only actions for everyone (only meaningful while login is off).
+  systemSettingsEditable: false
+
+  # -- Any other backend setting, as ENV_NAME: value (see the TracePcap
+  # docs/configuration/environment-variables). Applied last, so it overrides the chart.
+  extraEnv: {}
+  # -- Extra env entries in raw Kubernetes form (valueFrom, etc.).
+  extraEnvRaw: []
+
+  service:
+    port: 8080
+
+  # Spring Boot exposes the liveness/readiness health groups automatically on Kubernetes.
+  startupProbe:
+    httpGet: {path: /actuator/health/liveness, port: http}
+    periodSeconds: 5
+    failureThreshold: 60
+  livenessProbe:
+    httpGet: {path: /actuator/health/liveness, port: http}
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 4
+  readinessProbe:
+    httpGet: {path: /actuator/health/readiness, port: http}
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  # The image's entrypoint starts as root, chowns the log directory, then drops to the `spring`
+  # user with gosu. So the container cannot run with runAsNonRoot (it fails the `restricted` Pod
+  # Security Standard; `baseline` is fine).
+  podSecurityContext: {}
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+      add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE, FOWNER]
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: ""
+  terminationGracePeriodSeconds: 60
+
+## ---------------------------------------------------------------------------------------------
+## Frontend: nginx serving the React build and proxying /api to the backend.
+## ---------------------------------------------------------------------------------------------
+frontend:
+  image:
+    registry: ghcr.io
+    # -- Auth (Keycloak) is compiled into the frontend at build time; an auth deployment needs a
+    # frontend image built with VITE_AUTH_ENABLED=true.
+    repository: notyusheng/tracepcap-nginx
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+
+  # nginx is stateless, so it can scale out.
+  replicaCount: 1
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: "1"
+      memory: 256Mi
+
+  service:
+    type: ClusterIP
+    port: 80
+    nodePort: ""
+    annotations: {}
+
+  livenessProbe:
+    httpGet: {path: /health, port: http}
+    periodSeconds: 15
+  readinessProbe:
+    httpGet: {path: /health, port: http}
+    periodSeconds: 10
+
+  podSecurityContext: {}
+  securityContext: {}
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: {}
+
+## The only entry point users need: everything (UI, /api, Swagger) goes through the frontend.
+ingress:
+  enabled: false
+  className: ""
+  # Uploads are large and analysis requests long-running: give the controller room. These are
+  # ingress-nginx annotations; translate them for other controllers.
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "960"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "960"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+  hosts:
+    - host: tracepcap.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: tracepcap-tls
+  #    hosts: [tracepcap.local]
+
+## ---------------------------------------------------------------------------------------------
+## PostgreSQL. The bundled single-instance StatefulSet suits evaluation and small installs; for
+## production prefer an operator (CloudNativePG) or a managed database via externalDatabase.
+## ---------------------------------------------------------------------------------------------
+postgresql:
+  enabled: true
+  image:
+    registry: docker.io
+    repository: library/postgres
+    tag: 15-alpine
+    digest: ""
+    pullPolicy: IfNotPresent
+  auth:
+    database: tracepcap
+    username: tracepcap_user
+    # -- Generated (and kept across upgrades) when empty and no existingSecret is given.
+    password: ""
+    # -- Secret with keys `username` and `password`.
+    existingSecret: ""
+  # -- Size of /dev/shm (parallel queries). See backend.maxUploadPackets.
+  shmSize: 256Mi
+  config:
+    workMem: 32MB
+    hashMemMultiplier: "2.0"
+    maxParallelWorkersPerGather: 2
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
+    accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+externalDatabase:
+  host: ""
+  port: 5432
+  database: tracepcap
+  username: tracepcap_user
+  password: ""
+  # -- Secret holding the password.
+  existingSecret: ""
+  existingSecretPasswordKey: password
+
+## ---------------------------------------------------------------------------------------------
+## MinIO object storage for uploaded captures. MinIO pulled its public images in 2026; this uses
+## Chainguard's drop-in image, which serves only floating tags (mirror it for air-gapped installs).
+## Point externalS3 at any S3-compatible store instead.
+## ---------------------------------------------------------------------------------------------
+minio:
+  enabled: true
+  image:
+    registry: cgr.dev
+    repository: chainguard/minio
+    tag: latest
+    digest: ""
+    pullPolicy: IfNotPresent
+  auth:
+    rootUser: tracepcap
+    # -- Generated (and kept across upgrades) when empty and no existingSecret is given.
+    rootPassword: ""
+    # -- Secret with keys `root-user` and `root-password`.
+    existingSecret: ""
+  bucket: tracepcap-files
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClass: ""
+    accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+externalS3:
+  # -- e.g. https://s3.example.internal
+  endpoint: ""
+  bucket: tracepcap-files
+  accessKey: ""
+  secretKey: ""
+  # -- Secret with keys `access-key` and `secret-key`.
+  existingSecret: ""
+
+## Restrict traffic to what the app needs: ingress only to the frontend, and the datastores only
+## from the backend. Egress is left open (the LLM server is wherever you run it).
+networkPolicy:
+  enabled: false

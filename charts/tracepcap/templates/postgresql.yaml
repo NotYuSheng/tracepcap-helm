@@ -1,0 +1,127 @@
+{{- if .Values.postgresql.enabled }}
+{{- $p := .Values.postgresql }}
+{{- $fullname := include "tracepcap.postgresql.fullname" . }}
+{{- $secret := $p.auth.existingSecret | default $fullname }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "tracepcap.componentLabels" (dict "ctx" . "component" "postgresql") | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ $fullname }}
+  selector:
+    matchLabels:
+      {{- include "tracepcap.componentSelectorLabels" (dict "ctx" . "component" "postgresql") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tracepcap.componentSelectorLabels" (dict "ctx" . "component" "postgresql") | nindent 8 }}
+    spec:
+      {{- include "tracepcap.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "tracepcap.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      containers:
+        - name: postgresql
+          image: {{ include "tracepcap.image" (dict "ctx" . "image" $p.image) | quote }}
+          imagePullPolicy: {{ $p.image.pullPolicy }}
+          # Bounds parallel-query shared memory to fit shmSize (see the Compose file's notes).
+          args:
+            - -c
+            - work_mem={{ $p.config.workMem }}
+            - -c
+            - hash_mem_multiplier={{ $p.config.hashMemMultiplier }}
+            - -c
+            - max_parallel_workers_per_gather={{ $p.config.maxParallelWorkersPerGather }}
+          ports:
+            - name: postgresql
+              containerPort: 5432
+          env:
+            - name: TZ
+              value: {{ .Values.timezone | quote }}
+            - name: POSTGRES_DB
+              value: {{ $p.auth.database | quote }}
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: {name: {{ $secret }}, key: username}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ $secret }}, key: password}
+            # A subdirectory, so the volume's lost+found doesn't stop initdb.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          startupProbe:
+            exec:
+              command: [sh, -c, 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            exec:
+              command: [sh, -c, 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command: [sh, -c, 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml $p.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ $p.shmSize }}
+        {{- if not $p.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+      {{- with $p.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $p.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $p.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if $p.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "tracepcap.componentSelectorLabels" (dict "ctx" . "component" "postgresql") | nindent 10 }}
+      spec:
+        accessModes:
+          {{- toYaml $p.persistence.accessModes | nindent 10 }}
+        {{- include "tracepcap.storageClass" (dict "ctx" . "persistence" $p.persistence) | nindent 8 }}
+        resources:
+          requests:
+            storage: {{ $p.persistence.size }}
+  {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "tracepcap.componentLabels" (dict "ctx" . "component" "postgresql") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+  selector:
+    {{- include "tracepcap.componentSelectorLabels" (dict "ctx" . "component" "postgresql") | nindent 4 }}
+{{- end }}

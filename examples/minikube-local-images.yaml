@@ -1,0 +1,19 @@
+# Smoke test on minikube with images built locally and loaded via `minikube image load`.
+global:
+  imageRegistry: docker.io
+backend:
+  image: {repository: library/tracepcap-backend, tag: k8s-test, pullPolicy: Never}
+  memoryMB: 1536
+  resources:
+    requests: {cpu: 250m, memory: 1536Mi}
+    limits: {cpu: "2", memory: 1536Mi}
+frontend:
+  image: {repository: library/tracepcap-nginx, tag: k8s-test, pullPolicy: Never}
+postgresql:
+  image: {registry: docker.io}
+  resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {cpu: "1", memory: 512Mi}}
+  persistence: {size: 1Gi}
+minio:
+  persistence: {size: 1Gi}
+networkPolicy:
+  enabled: true

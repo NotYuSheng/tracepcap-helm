@@ -1,0 +1,54 @@
+# A production-shaped install: managed PostgreSQL and S3, credentials from pre-created Secrets,
+# TLS Ingress, NetworkPolicies, and an internal registry mirror.
+#
+#   kubectl -n tracepcap create secret generic tracepcap-db --from-literal=password=...
+#   kubectl -n tracepcap create secret generic tracepcap-s3 \
+#     --from-literal=access-key=... --from-literal=secret-key=...
+#   kubectl -n tracepcap create secret generic tracepcap-llm --from-literal=llm-api-key=...
+#   helm install tracepcap oci://ghcr.io/notyusheng/charts/tracepcap -n tracepcap -f production.yaml
+global:
+  imageRegistry: registry.internal.example
+  imagePullSecrets: [{name: regcred}]
+
+backend:
+  # Bigger captures need more memory: the upload cap is 16% and the JVM heap 50% of this.
+  memoryMB: 8192
+  resources:
+    requests: {cpu: "2", memory: 8Gi}
+    limits: {cpu: "4", memory: 8Gi}
+  llm:
+    baseUrl: http://llm.internal.example:1234/v1
+    model: qwen3-8b
+    existingSecret: tracepcap-llm
+    maxTokens: "24000"
+    timeout: "900"
+  retention:
+    fileHours: 168
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: tracepcap.example.org
+      paths: [{path: /, pathType: Prefix}]
+  tls:
+    - secretName: tracepcap-tls
+      hosts: [tracepcap.example.org]
+
+postgresql:
+  enabled: false
+externalDatabase:
+  host: postgres.db.svc.cluster.local
+  database: tracepcap
+  username: tracepcap
+  existingSecret: tracepcap-db
+
+minio:
+  enabled: false
+externalS3:
+  endpoint: https://s3.internal.example
+  bucket: tracepcap-files
+  existingSecret: tracepcap-s3
+
+networkPolicy:
+  enabled: true
