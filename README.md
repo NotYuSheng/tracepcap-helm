@@ -27,9 +27,9 @@ and object store accept connections.
 ## Requirements
 
 - Kubernetes 1.25+, Helm 3.8+ (OCI support)
-- A TracePcap release whose images (a) accept `NGINX_BACKEND_URL` and read the resolver from
-  `/etc/resolv.conf`, and (b) are tagged with their version on GHCR. The chart's `appVersion`
-  names that tag.
+- TracePcap v0.5.0 or later: the first release whose images accept `NGINX_BACKEND_URL`, read the
+  resolver from `/etc/resolv.conf`, and are tagged with their version on GHCR. The chart's
+  `appVersion` names that tag.
 - About 3 GiB of allocatable memory with the defaults (the backend's 2 GiB is most of it).
 
 ## Configuration
@@ -63,6 +63,12 @@ TracePcap runs fully offline, and the chart does too:
    `library/postgres:15-alpine`, `chainguard/minio:latest`, `library/busybox:1.37`.
 2. Download the chart `.tgz` from this repo's GitHub releases (or `helm pull oci://...`).
 3. `helm install tracepcap ./tracepcap-<version>.tgz --set global.imageRegistry=<your-registry>`
+
+The Suricata ruleset is baked into the backend image, so it ages with it; the app shows its date
+next to Suricata's alerts. To use a newer one, put ET's `emerging.rules.tar.gz` (downloaded
+elsewhere) in a volume and point `backend.suricata.rulesVolume` at it, e.g.
+`--set backend.suricata.rulesVolume.persistentVolumeClaim.claimName=suricata-rules`. TracePcap
+test-loads it, and uses the built-in rules if it won't load.
 
 ### Security notes
 

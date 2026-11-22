@@ -3,9 +3,9 @@ name: tracepcap
 description: TracePcap, offline-capable PCAP analysis (Spring Boot backend, React frontend, PostgreSQL, MinIO)
 type: application
 # The chart's own version. Bump on every chart change (SemVer), independently of the app.
-version: 0.1.0
+version: 0.2.0
 # The TracePcap release this chart deploys by default; image tags default to it.
-appVersion: "v0.4.0"
+appVersion: "v0.5.0"
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/NotYuSheng/TracePcap
 sources:

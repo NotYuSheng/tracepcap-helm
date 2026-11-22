@@ -165,6 +165,8 @@ spec:
               value: {{ $b.suricata.enabled | quote }}
             - name: SURICATA_WARM_ENGINE_ENABLED
               value: {{ $b.suricata.warmEngine | quote }}
+            - name: SURICATA_RULESET_STALE_DAYS
+              value: {{ $b.suricata.rulesetStaleDays | quote }}
             - name: MAX_UPLOAD_PACKETS
               value: {{ $b.maxUploadPackets | int64 | quote }}
             {{- range $k, $v := $b.extraEnv }}
@@ -193,6 +195,11 @@ spec:
               mountPath: /app/logs
             - name: tmp
               mountPath: /tmp
+            {{- if $b.suricata.rulesVolume }}
+            - name: suricata-rules
+              mountPath: /var/lib/tracepcap/suricata-rules
+              readOnly: true
+            {{- end }}
       volumes:
         # Logs go to stdout too; the file log (prod profile) is scratch. Suricata's warm-engine
         # socket and the analysis temp files live in /tmp.
@@ -200,6 +207,10 @@ spec:
           emptyDir: {}
         - name: tmp
           emptyDir: {}
+        {{- with $b.suricata.rulesVolume }}
+        - name: suricata-rules
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
       {{- with $b.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
