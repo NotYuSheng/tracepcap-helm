@@ -99,6 +99,13 @@ backend:
   suricata:
     enabled: true
     warmEngine: true
+    # -- Flag the Suricata ruleset as stale once it's older than this many days (TracePcap v0.5+).
+    rulesetStaleDays: 30
+    # -- A newer ruleset than the one baked into the image (TracePcap v0.5+): any volume source
+    # (e.g. `persistentVolumeClaim: {claimName: suricata-rules}` or `configMap: {name: ...}`)
+    # holding ET's emerging.rules.tar.gz or .rules files. Mounted read-only; TracePcap test-loads it
+    # and falls back to the built-in rules if it won't load. Empty: the built-in rules.
+    rulesVolume: {}
 
   # -- Max packets per upload (MAX_UPLOAD_PACKETS); 0 disables. Raise together with
   # postgresql.shmSize and postgresql.config.workMem.

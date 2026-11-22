@@ -71,7 +71,7 @@
         },
         "suricata": {
           "type": "object",
-          "properties": {"enabled": {"type": "boolean"}, "warmEngine": {"type": "boolean"}}
+          "properties": {"enabled": {"type": "boolean"}, "warmEngine": {"type": "boolean"}, "rulesetStaleDays": {"type": "integer", "minimum": 1}, "rulesVolume": {"type": "object"}}
         },
         "maxUploadPackets": {"type": "integer", "minimum": 0},
         "systemSettingsEditable": {"type": "boolean"},
